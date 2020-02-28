@@ -1,0 +1,172 @@
+---
+title: "Lab 8 - text analysis"
+author: "Amelia Ritger"
+date: "2/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning=FALSE,
+                      message=FALSE)
+```
+
+```{r}
+#Attach packages
+library(tidyverse)
+library(here)
+#for text mining:
+library(pdftools)
+library(tidytext)
+library(textdata)
+library(ggwordcloud)
+```
+
+### Read in the report:
+```{r}
+ipcc_path <- here("data", "ipcc_gw_15.pdf")
+ipcc_text <- pdftools::pdf_text(ipcc_path) #each page gets its own line
+
+ipcc_p9 <- ipcc_text[9] #look at just page 9
+ipcc_p9 #\r\n means a line break (on a Mac, it's just \n)
+```
+
+### Get this into df shape + do some wrangling
+
+- Split up pages into separate lines using `stringr::str_split()`
+- Unnest into regular columns using `tidyr::unnest()`
+- Remove leading/trailing white space using `stringr::stri_trim()`
+
+```{r}
+ipcc_df <- data.frame(ipcc_text) %>%
+  mutate(text_full = str_split(ipcc_text, pattern = "\r\n")) %>%  #split up existing strings in rows, at each line break >> each line shows up as a difference piece of a string
+  unnest(text_full) %>% 
+  mutate(text_full = str_trim(text_full)) #get rid of empty space endpoints
+```
+
+### Get tokens using `unnest_tokens()`
+```{r}
+ipcc_tokens <- ipcc_df %>% 
+  unnest_tokens(word,text_full) #give every word its own row
+```
+
+### Count all the words!
+```{r}
+ipcc_wc <- ipcc_tokens %>% 
+  count(word) %>% 
+  arrange(-n)
+```
+
+### Remove the stop words
+```{r}
+view(stop_words)
+
+ipcc_stop <- ipcc_tokens %>% 
+  anti_join(stop_words) %>% #remove stopwords from ipcc_token
+  dplyr::select(-ipcc_text)
+```
+
+Remove all numeric pieces:
+```{r}
+ipcc_no_numeric <- ipcc_stop %>% 
+  dplyr::filter(is.na(as.numeric(word))) #for every entry in "word" column, convert it to a number - if it's not a number, return NA
+```
+
+### Start doing some visualization
+
+Word cloud
+```{r}
+ipcc_top100 <- ipcc_no_numeric %>% 
+  count(word) %>% 
+  arrange(-n) %>% 
+  head(100)
+
+ggplot(data=ipcc_top100, aes(label=word)) +
+  geom_text_wordcloud() +
+  theme_minimal()
+
+#hey look, it's a cloud of words...
+
+ggplot(data=ipcc_top100, aes(label=word, size=n)) +
+  geom_text_wordcloud(aes(color=n), shape="fire") +
+  scale_size_area(max_size=12) +
+  scale_color_gradientn(colors = c("turquoise", "blue", "red")) +
+  theme_minimal()
+```
+
+### Sentiment analysis for text:
+```{r}
+get_sentiments(lexicon="afinn") #values from -5 to +5
+get_sentiments(lexicon="bing") #negative or positive
+get_sentiments(lexicon="nrc") #8 emotions or positive/negative
+
+
+afinn_pos <- get_sentiments(lexicon="afinn") %>% 
+  filter(value %in% c(4,5))
+
+view(afinn_pos)
+```
+
+### Bind together words
+```{r}
+ipcc_afinn <- ipcc_stop %>% 
+  inner_join(get_sentiments(lexicon="afinn"))
+```
+
+Find counts of value rankings (and plot in a histogram):
+```{r}
+ipcc_afinn_hist <- ipcc_afinn %>% 
+  count(value)
+
+ggplot(data=ipcc_afinn_hist, aes(x=value, y=n)) +
+  geom_col()
+```
+
+```{r}
+ipcc_afinn2 <- ipcc_afinn %>% 
+  filter(value==2) #all words associated with value of 2
+
+ipcc_summary <- ipcc_afinn %>% 
+  summarize(
+    mean_score = mean(value), 
+    median_score = median(value)
+  )
+```
+
+
+### Check out sentiments by NRC
+```{r}
+ipcc_nrc <- ipcc_stop %>% 
+  inner_join(get_sentiments(lexicon = "nrc"))
+
+# See what's excluded:
+ipcc_exclude <- ipcc_stop %>% 
+  anti_join(get_sentiments(lexicon="nrc"))
+```
+
+Find counts by sentiment:
+```{r}
+ipcc_nrc_n <- ipcc_nrc %>% 
+  count(sentiment, sort = TRUE) %>% 
+  mutate(sentiment=as.factor(sentiment),
+         sentiment=fct_reorder(sentiment, -n)) #make it ggplot friendly (AKA remove default alphabetical order)
+
+ggplot(data=ipcc_nrc_n) +
+  geom_col(aes(x=sentiment, y=n))
+```
+
+For each sentiment bin, what are the top 5 most frequent words associated with that bin?
+```{r}
+ipcc_nrc_n5 <- ipcc_nrc %>% 
+  count(word, sentiment, sort=TRUE) %>% #get counts for each word associated for each sentiment
+  group_by(sentiment) %>% 
+  top_n(5) %>% #EXPECTS YOU TO HAVE DONE COUNT() ALREADY; get top 5 most common words for each group; ties are included in top_n()
+  ungroup()
+
+ggplot(data=ipcc_nrc_n5, aes(x=reorder(word,n), y=n), fill=sentiment) + #here's another way to reorder characters!
+  geom_col(show.legend=FALSE, aes(fill=sentiment)) +
+  facet_wrap(~sentiment, ncol=2, scales="free")
+
+```
+
+Text mining is becoming a major tool to try to ask questions about text data - but UNDERSTAND that it doesn't capture context for words, and words important to your field might be misclassified or left out of the lexicon you're using!
